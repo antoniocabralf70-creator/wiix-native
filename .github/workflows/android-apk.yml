@@ -1,0 +1,110 @@
+name: Build WiiXNative APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Baixar repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Instalar Android SDK, NDK e CMake
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;26.1.10909125" \
+            "cmake;3.22.1"
+
+      - name: Localizar projeto Android e configurar ambiente
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p source
+
+          ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' -not -path './.git/*' -print -quit)"
+          if [ -n "$ZIP_FILE" ]; then
+            echo "Extraindo $ZIP_FILE..."
+            unzip -q -o "$ZIP_FILE" -d source
+          fi
+
+          SETTINGS_FILE="$(find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -not -path './.git/*' -not -path '*/.gradle/*' -not -path '*/build/*' -print -quit)"
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "::error::Arquivo settings.gradle ou settings.gradle.kts não encontrado no repositório."
+            find . -maxdepth 4 -not -path './.git/*'
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          echo "Projeto encontrado em: $PROJECT_DIR"
+
+          cat <<EOF > "$PROJECT_DIR/local.properties"
+          sdk.dir=$ANDROID_HOME
+          ndk.dir=$ANDROID_HOME/ndk/26.1.10909125
+          EOF
+
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Compilar APK
+        shell: bash
+        env:
+          GRADLE_OPTS: "-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
+        run: |
+          set -o pipefail
+          cd "${{ steps.project.outputs.dir }}"
+
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          else
+            gradle --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          fi
+
+      - name: Enviar APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WiiXNative-APK
+          path: "**/build/outputs/apk/debug/*.apk"
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Enviar log de erro
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WiiXNative-build-log
+          path: build.log
+          if-no-files-found: ignore
+          retention-days: 7
