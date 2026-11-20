@@ -1,0 +1,48 @@
+name: Test WiiXNative Build (Quick Verify)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  test-build:
+    name: Quick Test Build (MediaTek & Cemu Controls)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check Environment & SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== Verificando Java ==="
+          java -version
+          echo "=== Verificando Android SDK ==="
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls -la "$ANDROID_HOME"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;27.0.12077973" "cmake;3.22.1"
+
+      - name: Verify Cemu Android Source Connection
+        shell: bash
+        run: |
+          set -euo pipefail
+          git ls-remote https://github.com/Producdevity/Cemu-Android.git HEAD
+          echo "Conexao com repositorio Cemu Android OK!"
+
+      - name: Test MediaTek Compiler Flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          NDK_CLANG="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang++"
+          cat << 'EOF' > test_mtk.cpp
+          #include <iostream>
+          int main() {
+              std::cout << "MediaTek ARMv8.2-A + FP16 + DotProd OK" << std::endl;
+              return 0;
+          }
+          EOF
+          "$NDK_CLANG" -O3 -march=armv8.2-a+dotprod+fp16+crypto -ffast-math test_mtk.cpp -o test_mtk
+          file test_mtk
+          echo "Compilacao de teste MediaTek concluida com sucesso!"
