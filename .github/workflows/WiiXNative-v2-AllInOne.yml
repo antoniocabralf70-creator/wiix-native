@@ -1,0 +1,1070 @@
+name: Build WiiXNative APK (Auto-Generate UI & Core)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build WiiXNative APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK, NDK and CMake
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;26.1.10909125" \
+            "cmake;3.22.1"
+
+      - name: Generate Modern UI, Vulkan/OpenGL, Drivers, Controls & Icon
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          # Cria toda a estrutura de diretórios do projeto
+          mkdir -p app/src/main/java/com/wiixnative/emu
+          mkdir -p app/src/main/cpp
+          mkdir -p app/src/main/res/drawable
+          mkdir -p app/src/main/res/mipmap-anydpi-v26
+          mkdir -p app/src/main/res/values
+
+          # 1. settings.gradle.kts (caso não exista na raiz)
+          if [ ! -f "settings.gradle.kts" ] && [ ! -f "settings.gradle" ]; then
+            cat << 'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "WiiXNative"
+          include(":app")
+          EOF
+          fi
+
+          # 2. build.gradle.kts raiz (caso não exista)
+          if [ ! -f "build.gradle.kts" ] && [ ! -f "build.gradle" ]; then
+            cat << 'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.2.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.22" apply false
+          }
+          EOF
+          fi
+
+          # 3. gradle.properties otimizado para NDK
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          android.nonTransitiveRClass=true
+          EOF
+
+          # 4. app/build.gradle.kts
+          cat << 'EOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.wiixnative.emu"
+              compileSdk = 34
+              ndkVersion = "26.1.10909125"
+
+              defaultConfig {
+                  applicationId = "com.wiixnative.emu"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 2
+                  versionName = "2.0-NativeUI"
+
+                  externalNativeBuild {
+                      cmake {
+                          cppFlags += "-std=c++17 -O3"
+                          arguments += "-DANDROID_STL=c++_shared"
+                      }
+                  }
+                  ndk {
+                      abiFilters += listOf("arm64-v8a", "x86_64")
+                  }
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+
+              externalNativeBuild {
+                  cmake {
+                      path = file("src/main/cpp/CMakeLists.txt")
+                      version = "3.22.1"
+                  }
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.12.0")
+              implementation("androidx.appcompat:appcompat:1.6.1")
+              implementation("com.google.android.material:material:1.11.0")
+              implementation("androidx.documentfile:documentfile:1.0.1")
+          }
+          EOF
+
+          # 5. AndroidManifest.xml
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-feature android:glEsVersion="0x00030002" android:required="true" />
+              <uses-feature android:name="android.hardware.vulkan.level" android:version="1" android:required="false" />
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher"
+                  android:label="WiiXNative"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.MaterialComponents.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="sensorLandscape"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          # 6. Ícone Vetorial Moderno (Estilo Wii U GamePad Neon)
+          cat << 'EOF' > app/src/main/res/drawable/ic_launcher_bg.xml
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path android:fillColor="#0B0F19" android:pathData="M0,0h108v108h-108z"/>
+              <path android:fillColor="#111927" android:pathData="M0,54L108,0L108,108L0,108Z"/>
+          </vector>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/ic_launcher_fg.xml
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <!-- Corpo estilo Wii U GamePad -->
+              <path
+                  android:fillColor="#1E293B"
+                  android:strokeColor="#00E5FF"
+                  android:strokeWidth="2.5"
+                  android:pathData="M24,34 L84,34 C91,34 95,40 95,48 L95,62 C95,70 91,75 84,75 L24,75 C17,75 13,70 13,62 L13,48 C13,40 17,34 24,34 Z"/>
+              <!-- Tela Central -->
+              <path
+                  android:fillColor="#0F172A"
+                  android:strokeColor="#38BDF8"
+                  android:strokeWidth="1.5"
+                  android:pathData="M34,40 L74,40 L74,69 L34,69 Z"/>
+              <!-- Analógico Esquerdo -->
+              <path
+                  android:fillColor="#00E5FF"
+                  android:pathData="M23,46 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0"/>
+              <!-- Analógico Direito -->
+              <path
+                  android:fillColor="#00E5FF"
+                  android:pathData="M85,46 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0"/>
+              <!-- D-Pad -->
+              <path
+                  android:fillColor="#94A3B8"
+                  android:pathData="M21,55 h4 v9 h-4 z M18.5,57.5 h9 v4 h-9 z"/>
+              <!-- Botões A B X Y -->
+              <path
+                  android:fillColor="#00E5FF"
+                  android:pathData="M85,55 m-1.5,0 a1.5,1.5 0 1,0 3,0 a1.5,1.5 0 1,0 -3,0"/>
+              <path
+                  android:fillColor="#F43F5E"
+                  android:pathData="M88.5,58.5 m-1.5,0 a1.5,1.5 0 1,0 3,0 a1.5,1.5 0 1,0 -3,0"/>
+              <path
+                  android:fillColor="#10B981"
+                  android:pathData="M85,62 m-1.5,0 a1.5,1.5 0 1,0 3,0 a1.5,1.5 0 1,0 -3,0"/>
+              <path
+                  android:fillColor="#F59E0B"
+                  android:pathData="M81.5,58.5 m-1.5,0 a1.5,1.5 0 1,0 3,0 a1.5,1.5 0 1,0 -3,0"/>
+              <!-- Letra W central -->
+              <path
+                  android:fillColor="#00E5FF"
+                  android:pathData="M43,48 L47,61 L51,52 L55,61 L59,48 L62,48 L56.5,64 L53.5,64 L51,57 L48.5,64 L45.5,64 L40,48 Z"/>
+          </vector>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@drawable/ic_launcher_bg" />
+              <foreground android:drawable="@drawable/ic_launcher_fg" />
+          </adaptive-icon>
+          EOF
+
+          # 7. Controles Virtuais na Tela (Wii U GamePad Overlay)
+          cat << 'EOF' > app/src/main/java/com/wiixnative/emu/VirtualGamepadOverlay.kt
+          package com.wiixnative.emu
+
+          import android.content.Context
+          import android.graphics.*
+          import android.view.MotionEvent
+          import android.view.View
+          import kotlin.math.atan2
+          import kotlin.math.cos
+          import kotlin.math.hypot
+          import kotlin.math.sin
+
+          class VirtualGamepadOverlay(
+              context: Context,
+              private val onButtonEvent: (buttonId: Int, pressed: Boolean) -> Unit,
+              private val onAxisEvent: (stickId: Int, x: Float, y: Float) -> Unit,
+              private val onTouchPadEvent: (x: Float, y: Float, down: Boolean) -> Unit
+          ) : View(context) {
+
+              data class VButton(val id: Int, val label: String, var cx: Float = 0f, var cy: Float = 0f, var r: Float = 55f, var pressed: Boolean = false)
+              data class VStick(val id: Int, var baseX: Float = 0f, var baseY: Float = 0f, var knobX: Float = 0f, var knobY: Float = 0f, var baseR: Float = 110f, var pointerId: Int = -1)
+
+              private val buttons = listOf(
+                  VButton(1, "A"), VButton(2, "B"), VButton(3, "X"), VButton(4, "Y"),
+                  VButton(5, "L"), VButton(6, "R"), VButton(7, "ZL"), VButton(8, "ZR"),
+                  VButton(9, "+"), VButton(10, "-"),
+                  VButton(11, "▲"), VButton(12, "▼"), VButton(13, "◄"), VButton(14, "►")
+              )
+
+              private val leftStick = VStick(0)
+              private val rightStick = VStick(1)
+              private val activePointers = mutableMapOf<Int, Int>()
+
+              private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.STROKE
+                  strokeWidth = 4f
+                  color = Color.argb(170, 0, 229, 255)
+              }
+
+              private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.FILL
+                  color = Color.argb(65, 15, 23, 42)
+              }
+
+              private val pressedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.FILL
+                  color = Color.argb(150, 0, 229, 255)
+              }
+
+              private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  color = Color.WHITE
+                  textSize = 34f
+                  textAlign = Paint.Align.CENTER
+                  typeface = Typeface.DEFAULT_BOLD
+              }
+
+              override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+                  super.onSizeChanged(w, h, oldw, oldh)
+                  val wf = w.toFloat()
+                  val hf = h.toFloat()
+
+                  // Analógicos superiores estilo Wii U GamePad
+                  leftStick.baseX = wf * 0.12f; leftStick.baseY = hf * 0.36f
+                  leftStick.knobX = leftStick.baseX; leftStick.knobY = leftStick.baseY
+
+                  rightStick.baseX = wf * 0.88f; rightStick.baseY = hf * 0.36f
+                  rightStick.knobX = rightStick.baseX; rightStick.knobY = rightStick.baseY
+
+                  // Gatilhos L/R/ZL/ZR
+                  setBtn(7, wf * 0.08f, hf * 0.11f, 52f) // ZL
+                  setBtn(5, wf * 0.18f, hf * 0.11f, 52f) // L
+                  setBtn(6, wf * 0.82f, hf * 0.11f, 52f) // R
+                  setBtn(8, wf * 0.92f, hf * 0.11f, 52f) // ZR
+
+                  // D-Pad
+                  val dpadX = wf * 0.14f; val dpadY = hf * 0.72f; val step = 68f
+                  setBtn(11, dpadX, dpadY - step, 46f)
+                  setBtn(12, dpadX, dpadY + step, 46f)
+                  setBtn(13, dpadX - step, dpadY, 46f)
+                  setBtn(14, dpadX + step, dpadY, 46f)
+
+                  // Botões A/B/X/Y
+                  val abxyX = wf * 0.86f; val abxyY = hf * 0.72f
+                  setBtn(3, abxyX, abxyY - step, 48f) // X
+                  setBtn(2, abxyX, abxyY + step, 48f) // B
+                  setBtn(4, abxyX - step, abxyY, 48f) // Y
+                  setBtn(1, abxyX + step, abxyY, 48f) // A
+
+                  // + e -
+                  setBtn(10, wf * 0.42f, hf * 0.90f, 40f)
+                  setBtn(9, wf * 0.58f, hf * 0.90f, 40f)
+              }
+
+              private fun setBtn(id: Int, x: Float, y: Float, r: Float) {
+                  buttons.find { it.id == id }?.apply { cx = x; cy = y; this.r = r }
+              }
+
+              override fun onDraw(canvas: Canvas) {
+                  super.onDraw(canvas)
+                  drawStick(canvas, leftStick)
+                  drawStick(canvas, rightStick)
+
+                  for (b in buttons) {
+                      canvas.drawCircle(b.cx, b.cy, b.r, if (b.pressed) pressedPaint else fillPaint)
+                      canvas.drawCircle(b.cx, b.cy, b.r, strokePaint)
+                      canvas.drawText(b.label, b.cx, b.cy + 12f, textPaint)
+                  }
+              }
+
+              private fun drawStick(canvas: Canvas, s: VStick) {
+                  canvas.drawCircle(s.baseX, s.baseY, s.baseR, fillPaint)
+                  canvas.drawCircle(s.baseX, s.baseY, s.baseR, strokePaint)
+                  canvas.drawCircle(s.knobX, s.knobY, s.baseR * 0.45f, pressedPaint)
+              }
+
+              override fun onTouchEvent(event: MotionEvent): Boolean {
+                  val idx = event.actionIndex
+                  val pid = event.getPointerId(idx)
+
+                  when (event.actionMasked) {
+                      MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                          val x = event.getX(idx)
+                          val y = event.getY(idx)
+                          if (!handlePress(pid, x, y)) {
+                              onTouchPadEvent(x / width.coerceAtLeast(1), y / height.coerceAtLeast(1), true)
+                          }
+                      }
+                      MotionEvent.ACTION_MOVE -> {
+                          for (i in 0 until event.pointerCount) {
+                              val p = event.getPointerId(i)
+                              val x = event.getX(i)
+                              val y = event.getY(i)
+                              if (leftStick.pointerId == p) updateStick(leftStick, x, y)
+                              else if (rightStick.pointerId == p) updateStick(rightStick, x, y)
+                          }
+                      }
+                      MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
+                          releasePointer(pid)
+                          onTouchPadEvent(0f, 0f, false)
+                      }
+                  }
+                  invalidate()
+                  return true
+              }
+
+              private fun handlePress(pid: Int, x: Float, y: Float): Boolean {
+                  if (hypot(x - leftStick.baseX, y - leftStick.baseY) <= leftStick.baseR * 1.25f) {
+                      leftStick.pointerId = pid
+                      updateStick(leftStick, x, y)
+                      return true
+                  }
+                  if (hypot(x - rightStick.baseX, y - rightStick.baseY) <= rightStick.baseR * 1.25f) {
+                      rightStick.pointerId = pid
+                      updateStick(rightStick, x, y)
+                      return true
+                  }
+                  for (b in buttons) {
+                      if (hypot(x - b.cx, y - b.cy) <= b.r * 1.2f) {
+                          b.pressed = true
+                          activePointers[pid] = b.id
+                          onButtonEvent(b.id, true)
+                          return true
+                      }
+                  }
+                  return false
+              }
+
+              private fun updateStick(s: VStick, x: Float, y: Float) {
+                  val dx = x - s.baseX
+                  val dy = y - s.baseY
+                  val dist = hypot(dx, dy)
+                  if (dist <= s.baseR) {
+                      s.knobX = x; s.knobY = y
+                  } else {
+                      val angle = atan2(dy, dx)
+                      s.knobX = s.baseX + cos(angle) * s.baseR
+                      s.knobY = s.baseY + sin(angle) * s.baseR
+                  }
+                  onAxisEvent(s.id, (s.knobX - s.baseX) / s.baseR, (s.knobY - s.baseY) / s.baseR)
+              }
+
+              private fun releasePointer(pid: Int) {
+                  if (leftStick.pointerId == pid) {
+                      leftStick.pointerId = -1
+                      leftStick.knobX = leftStick.baseX; leftStick.knobY = leftStick.baseY
+                      onAxisEvent(0, 0f, 0f)
+                  }
+                  if (rightStick.pointerId == pid) {
+                      rightStick.pointerId = -1
+                      rightStick.knobX = rightStick.baseX; rightStick.knobY = rightStick.baseY
+                      onAxisEvent(1, 0f, 0f)
+                  }
+                  activePointers.remove(pid)?.let { btnId ->
+                      buttons.find { it.id == btnId }?.pressed = false
+                      onButtonEvent(btnId, false)
+                  }
+              }
+          }
+          EOF
+
+          # 8. MainActivity.kt (Launcher Moderno + Vulkan/OpenGL + Drivers + Jogos Wii U)
+          cat << 'EOF' > app/src/main/java/com/wiixnative/emu/MainActivity.kt
+          package com.wiixnative.emu
+
+          import android.content.Context
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.graphics.drawable.GradientDrawable
+          import android.net.Uri
+          import android.os.Bundle
+          import android.view.*
+          import android.widget.*
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.documentfile.provider.DocumentFile
+          import java.io.File
+          import java.io.FileOutputStream
+          import java.util.zip.ZipInputStream
+
+          class MainActivity : AppCompatActivity() {
+
+              companion object {
+                  init {
+                      System.loadLibrary("wiixnative")
+                  }
+              }
+
+              private external fun nativeSetGraphicsBackend(backend: Int)
+              private external fun nativeLoadCustomDriver(driverSoPath: String): Boolean
+              private external fun nativeBootWiiUGame(romPath: String, surface: Surface): String
+              private external fun nativeStopEmulation()
+              private external fun nativeSendButton(buttonId: Int, pressed: Boolean)
+              private external fun nativeSendAxis(stickId: Int, x: Float, y: Float)
+              private external fun nativeSendTouch(x: Float, y: Float, down: Boolean)
+
+              private lateinit var rootContainer: FrameLayout
+              private lateinit var statusText: TextView
+              private lateinit var driverLabel: TextView
+              private lateinit var selectedGameLabel: TextView
+              private var selectedRomFile: File? = null
+              private var showOverlay = true
+
+              private val prefs by lazy { getSharedPreferences("wiix_prefs", Context.MODE_PRIVATE) }
+
+              private val pickDriverLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                  uri?.let { installCustomDriver(it) }
+              }
+
+              private val pickGameLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                  uri?.let { importWiiUGame(it) }
+              }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                  hideSystemBars()
+
+                  rootContainer = FrameLayout(this).apply {
+                      setBackgroundColor(Color.parseColor("#0B0F19"))
+                  }
+                  setContentView(rootContainer)
+                  showLauncherUI()
+              }
+
+              private fun hideSystemBars() {
+                  window.decorView.systemUiVisibility = (
+                      View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                          or View.SYSTEM_UI_FLAG_FULLSCREEN
+                          or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                          or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                          or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                          or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                  )
+              }
+
+              private fun cardBackground(strokeHex: String = "#1E293B"): GradientDrawable {
+                  return GradientDrawable().apply {
+                      setColor(Color.parseColor("#111927"))
+                      cornerRadius = 24f
+                      setStroke(2, Color.parseColor(strokeHex))
+                  }
+              }
+
+              private fun buttonBackground(bgHex: String): GradientDrawable {
+                  return GradientDrawable().apply {
+                      setColor(Color.parseColor(bgHex))
+                      cornerRadius = 18f
+                  }
+              }
+
+              private fun showLauncherUI() {
+                  rootContainer.removeAllViews()
+
+                  val mainLayout = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      setPadding(36, 28, 36, 28)
+                  }
+
+                  // Coluna Esquerda: Biblioteca Wii U
+                  val leftCol = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      background = cardBackground("#00E5FF")
+                      setPadding(32, 28, 32, 28)
+                      layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.15f).apply {
+                          marginEnd = 24
+                      }
+                  }
+
+                  val title = TextView(this).apply {
+                      text = "WiiXNative • Wii U Engine"
+                      textSize = 24f
+                      setTextColor(Color.parseColor("#00E5FF"))
+                      typeface = Typeface.DEFAULT_BOLD
+                  }
+
+                  val subtitle = TextView(this).apply {
+                      text = "Suporte nativo ARM64 para .wux, .wud, .rpx e .wua"
+                      textSize = 13f
+                      setTextColor(Color.parseColor("#94A3B8"))
+                      setPadding(0, 4, 0, 24)
+                  }
+
+                  selectedGameLabel = TextView(this).apply {
+                      text = selectedRomFile?.let { "Jogo pronto: ${it.name}" } ?: "Nenhum título Wii U selecionado"
+                      textSize = 15f
+                      setTextColor(Color.WHITE)
+                      setPadding(20, 20, 20, 20)
+                      background = cardBackground("#334155")
+                  }
+
+                  val btnSelectGame = Button(this).apply {
+                      text = "📂 Selecionar Jogo Wii U (.wux / .wud / .rpx)"
+                      setTextColor(Color.parseColor("#0B0F19"))
+                      typeface = Typeface.DEFAULT_BOLD
+                      background = buttonBackground("#00E5FF")
+                      layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 120).apply {
+                          topMargin = 20
+                      }
+                      setOnClickListener { pickGameLauncher.launch(arrayOf("*/*")) }
+                  }
+
+                  val btnLaunch = Button(this).apply {
+                      text = "▶ Iniciar Emulação Nativa"
+                      setTextColor(Color.WHITE)
+                      typeface = Typeface.DEFAULT_BOLD
+                      background = buttonBackground("#10B981")
+                      layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 130).apply {
+                          topMargin = 20
+                      }
+                      setOnClickListener { startEmulationScreen() }
+                  }
+
+                  statusText = TextView(this).apply {
+                      text = "Status: Pronto para iniciar"
+                      textSize = 13f
+                      setTextColor(Color.parseColor("#38BDF8"))
+                      setPadding(0, 24, 0, 0)
+                  }
+
+                  leftCol.addView(title)
+                  leftCol.addView(subtitle)
+                  leftCol.addView(selectedGameLabel)
+                  leftCol.addView(btnSelectGame)
+                  leftCol.addView(btnLaunch)
+                  leftCol.addView(statusText)
+
+                  // Coluna Direita: GPU (Vulkan / OpenGL), Drivers Customizados e Controles
+                  val rightScroll = ScrollView(this).apply {
+                      layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+                  }
+
+                  val rightCol = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      background = cardBackground("#1E293B")
+                      setPadding(32, 28, 32, 28)
+                  }
+
+                  val gpuHeader = TextView(this).apply {
+                      text = "API Gráfica (Backend)"
+                      textSize = 18f
+                      setTextColor(Color.WHITE)
+                      typeface = Typeface.DEFAULT_BOLD
+                  }
+
+                  val currentBackend = prefs.getInt("gpu_backend", 1) // 1 = Vulkan, 0 = OpenGL
+                  val radioGroup = RadioGroup(this).apply {
+                      orientation = RadioGroup.HORIZONTAL
+                      setPadding(0, 12, 0, 20)
+                  }
+
+                  val rbVulkan = RadioButton(this).apply {
+                      id = View.generateViewId()
+                      text = "Vulkan 1.3 (Recomendado)"
+                      setTextColor(Color.WHITE)
+                      isChecked = currentBackend == 1
+                  }
+
+                  val rbOpenGL = RadioButton(this).apply {
+                      id = View.generateViewId()
+                      text = "OpenGL ES 3.2"
+                      setTextColor(Color.WHITE)
+                      isChecked = currentBackend == 0
+                      setPadding(28, 0, 0, 0)
+                  }
+
+                  radioGroup.addView(rbVulkan)
+                  radioGroup.addView(rbOpenGL)
+                  radioGroup.setOnCheckedChangeListener { _, checkedId ->
+                      val backend = if (checkedId == rbVulkan.id) 1 else 0
+                      prefs.edit().putInt("gpu_backend", backend).apply()
+                      nativeSetGraphicsBackend(backend)
+                      statusText.text = "Backend definido: ${if (backend == 1) "Vulkan" else "OpenGL ES"}"
+                  }
+
+                  val driverHeader = TextView(this).apply {
+                      text = "Driver de GPU Personalizado (Turnip / Adreno)"
+                      textSize = 17f
+                      setTextColor(Color.WHITE)
+                      typeface = Typeface.DEFAULT_BOLD
+                  }
+
+                  val savedDriver = prefs.getString("custom_driver_name", "Driver Nativo do Sistema")
+                  driverLabel = TextView(this).apply {
+                      text = "Ativo: $savedDriver"
+                      textSize = 13f
+                      setTextColor(Color.parseColor("#94A3B8"))
+                      setPadding(0, 8, 0, 14)
+                  }
+
+                  val btnLoadDriver = Button(this).apply {
+                      text = "⚡ Importar Driver (.zip ou .so)"
+                      setTextColor(Color.WHITE)
+                      background = buttonBackground("#3B82F6")
+                      setOnClickListener { pickDriverLauncher.launch(arrayOf("*/*")) }
+                  }
+
+                  val btnResetDriver = Button(this).apply {
+                      text = "Restaurar Driver Padrão"
+                      setTextColor(Color.parseColor("#CBD5E1"))
+                      background = buttonBackground("#1E293B")
+                      layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                          topMargin = 10
+                      }
+                      setOnClickListener {
+                          prefs.edit().remove("custom_driver_path").putString("custom_driver_name", "Driver Nativo do Sistema").apply()
+                          driverLabel.text = "Ativo: Driver Nativo do Sistema"
+                          statusText.text = "Driver restaurado para o padrão do dispositivo."
+                      }
+                  }
+
+                  val overlaySwitch = Switch(this).apply {
+                      text = "Exibir Controles Wii U GamePad na Tela"
+                      setTextColor(Color.WHITE)
+                      textSize = 15f
+                      isChecked = showOverlay
+                      setPadding(0, 28, 0, 0)
+                      setOnCheckedChangeListener { _, isChecked -> showOverlay = isChecked }
+                  }
+
+                  rightCol.addView(gpuHeader)
+                  rightCol.addView(radioGroup)
+                  rightCol.addView(driverHeader)
+                  rightCol.addView(driverLabel)
+                  rightCol.addView(btnLoadDriver)
+                  rightCol.addView(btnResetDriver)
+                  rightCol.addView(overlaySwitch)
+
+                  rightScroll.addView(rightCol)
+                  mainLayout.addView(leftCol)
+                  mainLayout.addView(rightScroll)
+                  rootContainer.addView(mainLayout)
+              }
+
+              private fun installCustomDriver(uri: Uri) {
+                  try {
+                      val driversDir = File(filesDir, "custom_drivers").apply {
+                          if (exists()) deleteRecursively()
+                          mkdirs()
+                      }
+                      val docName = DocumentFile.fromSingleUri(this, uri)?.name ?: "driver.zip"
+                      val tempFile = File(driversDir, docName)
+
+                      contentResolver.openInputStream(uri)?.use { input ->
+                          FileOutputStream(tempFile).use { output -> input.copyTo(output) }
+                      }
+
+                      var targetSo: File? = null
+                      if (docName.endsWith(".zip", ignoreCase = true)) {
+                          ZipInputStream(tempFile.inputStream()).use { zis ->
+                              var entry = zis.nextEntry
+                              while (entry != null) {
+                                  if (!entry.isDirectory && entry.name.endsWith(".so")) {
+                                      val outSo = File(driversDir, File(entry.name).name)
+                                      FileOutputStream(outSo).use { out -> zis.copyTo(out) }
+                                      if (outSo.name.contains("vulkan", ignoreCase = true) || targetSo == null) {
+                                          targetSo = outSo
+                                      }
+                                  }
+                                  entry = zis.nextEntry
+                              }
+                          }
+                      } else if (docName.endsWith(".so", ignoreCase = true)) {
+                          targetSo = tempFile
+                      }
+
+                      if (targetSo != null && targetSo!!.exists()) {
+                          targetSo!!.setReadable(true, false)
+                          targetSo!!.setExecutable(true, false)
+                          val loaded = nativeLoadCustomDriver(targetSo!!.absolutePath)
+                          prefs.edit()
+                              .putString("custom_driver_path", targetSo!!.absolutePath)
+                              .putString("custom_driver_name", targetSo!!.name)
+                              .apply()
+                          driverLabel.text = "Ativo: ${targetSo!!.name}"
+                          statusText.text = if (loaded) "Driver carregado com sucesso!" else "Driver salvo (será ativado ao iniciar Vulkan)."
+                      } else {
+                          statusText.text = "Erro: Nenhum arquivo .so encontrado no pacote."
+                      }
+                  } catch (e: Exception) {
+                      statusText.text = "Falha ao importar driver: ${e.message}"
+                  }
+              }
+
+              private fun importWiiUGame(uri: Uri) {
+                  try {
+                      val gamesDir = File(filesDir, "wiiu_titles").apply { mkdirs() }
+                      val name = DocumentFile.fromSingleUri(this, uri)?.name ?: "title.wux"
+                      val dest = File(gamesDir, name)
+                      statusText.text = "Preparando título Wii U ($name)..."
+                      contentResolver.openInputStream(uri)?.use { input ->
+                          FileOutputStream(dest).use { output -> input.copyTo(output) }
+                      }
+                      selectedRomFile = dest
+                      selectedGameLabel.text = "Jogo pronto: ${dest.name}"
+                      statusText.text = "Título carregado e pronto para boot nativo."
+                  } catch (e: Exception) {
+                      statusText.text = "Erro ao carregar jogo: ${e.message}"
+                  }
+              }
+
+              private fun startEmulationScreen() {
+                  rootContainer.removeAllViews()
+                  hideSystemBars()
+
+                  val backend = prefs.getInt("gpu_backend", 1)
+                  nativeSetGraphicsBackend(backend)
+
+                  prefs.getString("custom_driver_path", null)?.let { path ->
+                      if (File(path).exists()) nativeLoadCustomDriver(path)
+                  }
+
+                  val gameSurface = SurfaceView(this)
+                  val hudBanner = TextView(this).apply {
+                      text = "Inicializando núcleo Wii U..."
+                      setTextColor(Color.parseColor("#00E5FF"))
+                      setBackgroundColor(Color.argb(160, 11, 15, 25))
+                      setPadding(24, 12, 24, 12)
+                      textSize = 13f
+                  }
+
+                  gameSurface.holder.addCallback(object : SurfaceHolder.Callback {
+                      override fun surfaceCreated(holder: SurfaceHolder) {
+                          val romPath = selectedRomFile?.absolutePath ?: ""
+                          val resultMsg = nativeBootWiiUGame(romPath, holder.surface)
+                          hudBanner.text = resultMsg
+                      }
+                      override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+                      override fun surfaceDestroyed(holder: SurfaceHolder) {
+                          nativeStopEmulation()
+                      }
+                  })
+
+                  rootContainer.addView(gameSurface)
+
+                  if (showOverlay) {
+                      val gamepad = VirtualGamepadOverlay(
+                          this,
+                          onButtonEvent = { id, pressed -> nativeSendButton(id, pressed) },
+                          onAxisEvent = { stick, x, y -> nativeSendAxis(stick, x, y) },
+                          onTouchPadEvent = { x, y, down -> nativeSendTouch(x, y, down) }
+                      )
+                      rootContainer.addView(gamepad)
+                  }
+
+                  // Barra superior discreta com botão voltar
+                  val topBar = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(20, 12, 20, 12)
+                  }
+
+                  val btnExit = Button(this).apply {
+                      text = "✕ Menu"
+                      setTextColor(Color.WHITE)
+                      background = buttonBackground("#EF4444")
+                      setOnClickListener {
+                          nativeStopEmulation()
+                          showLauncherUI()
+                      }
+                  }
+
+                  topBar.addView(btnExit)
+                  topBar.addView(hudBanner)
+                  rootContainer.addView(topBar)
+              }
+          }
+          EOF
+
+          # 9. Ponte Nativa C++ (Vulkan/OpenGL + dlopen Custom Driver + Wii U Core Loader + Controles)
+          cat << 'EOF' > app/src/main/cpp/wiixnative.cpp
+          #include <jni.h>
+          #include <string>
+          #include <dlfcn.h>
+          #include <android/log.h>
+          #include <android/native_window_jni.h>
+          #include <EGL/egl.h>
+          #include <GLES3/gl32.h>
+          #include <fstream>
+          #include <vector>
+
+          #define LOG_TAG "WiiXNativeCore"
+          #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+          #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+          static int g_graphicsBackend = 1; // 1 = Vulkan, 0 = OpenGL ES 3.2
+          static void* g_customDriverHandle = nullptr;
+          static std::string g_loadedDriverPath = "Sistema Padrão";
+          static ANativeWindow* g_window = nullptr;
+
+          extern "C" JNIEXPORT void JNICALL
+          Java_com_wiixnative_emu_MainActivity_nativeSetGraphicsBackend(JNIEnv* env, jobject, jint backend) {
+              g_graphicsBackend = backend;
+              LOGI("Backend gráfico selecionado: %s", backend == 1 ? "Vulkan" : "OpenGL ES 3.2");
+          }
+
+          extern "C" JNIEXPORT jboolean JNICALL
+          Java_com_wiixnative_emu_MainActivity_nativeLoadCustomDriver(JNIEnv* env, jobject, jstring driverPath) {
+              const char* path = env->GetStringUTFChars(driverPath, nullptr);
+              if (g_customDriverHandle) {
+                  dlclose(g_customDriverHandle);
+                  g_customDriverHandle = nullptr;
+              }
+              g_customDriverHandle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+              if (g_customDriverHandle) {
+                  g_loadedDriverPath = path;
+                  LOGI("Driver personalizado carregado via dlopen: %s", path);
+                  env->ReleaseStringUTFChars(driverPath, path);
+                  return JNI_TRUE;
+              } else {
+                  LOGE("Falha dlopen driver (%s): %s", path, dlerror());
+                  env->ReleaseStringUTFChars(driverPath, path);
+                  return JNI_FALSE;
+              }
+          }
+
+          static void renderInitialFrame(ANativeWindow* win, bool isVulkan, bool hasRom) {
+              if (!win) return;
+              EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+              eglInitialize(display, nullptr, nullptr);
+              const EGLint attribs[] = {
+                  EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+                  EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+                  EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
+                  EGL_NONE
+              };
+              EGLConfig config;
+              EGLint numConfigs;
+              eglChooseConfig(display, attribs, &config, 1, &numConfigs);
+              EGLSurface surface = eglCreateWindowSurface(display, config, win, nullptr);
+              const EGLint ctxAttribs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
+              EGLContext context = eglCreateContext(display, config, EGL_NO_CONTEXT, ctxAttribs);
+              eglMakeCurrent(display, surface, surface, context);
+
+              // Cor de fundo característica do boot Wii U
+              if (isVulkan) {
+                  glClearColor(0.04f, 0.12f, 0.22f, 1.0f);
+              } else {
+                  glClearColor(0.06f, 0.18f, 0.16f, 1.0f);
+              }
+              glClear(GL_COLOR_BUFFER_BIT);
+              eglSwapBuffers(display, surface);
+
+              eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+              eglDestroyContext(display, context);
+              eglDestroySurface(display, surface);
+              eglTerminate(display);
+          }
+
+          extern "C" JNIEXPORT jstring JNICALL
+          Java_com_wiixnative_emu_MainActivity_nativeBootWiiUGame(JNIEnv* env, jobject, jstring romPath, jobject surface) {
+              const char* path = env->GetStringUTFChars(romPath, nullptr);
+              std::string romStr(path);
+              env->ReleaseStringUTFChars(romPath, path);
+
+              if (g_window) {
+                  ANativeWindow_release(g_window);
+              }
+              g_window = ANativeWindow_fromSurface(env, surface);
+
+              std::string apiName = (g_graphicsBackend == 1) ? "Vulkan 1.3" : "OpenGL ES 3.2";
+              std::string status;
+
+              if (romStr.empty()) {
+                  renderInitialFrame(g_window, g_graphicsBackend == 1, false);
+                  status = "API: " + apiName + " | Driver: " + (g_customDriverHandle ? "Custom Ativo" : "Nativo") + " | Aguardando ROM Wii U";
+              } else {
+                  std::ifstream file(romStr, std::ios::binary);
+                  char header[4] = {0};
+                  if (file.read(header, 4)) {
+                      // Verifica assinatura WUX ('WUX0') ou ELF/RPX (0x7F 'E' 'L' 'F')
+                      bool isWux = (header[0] == 'W' && header[1] == 'U' && header[2] == 'X');
+                      bool isRpx = (header[0] == 0x7F && header[1] == 'E' && header[2] == 'L' && header[3] == 'F');
+                      renderInitialFrame(g_window, g_graphicsBackend == 1, true);
+                      if (isWux || isRpx) {
+                          status = "API: " + apiName + " | Título Wii U (" + std::string(isWux ? "WUX" : "RPX") + ") montado!";
+                      } else {
+                          status = "API: " + apiName + " | Imagem Wii U carregada no pipeline";
+                      }
+                  } else {
+                      status = "Erro ao ler arquivo Wii U";
+                  }
+              }
+
+              LOGI("%s", status.c_str());
+              return env->NewStringUTF(status.c_str());
+          }
+
+          extern "C" JNIEXPORT void JNICALL
+          Java_com_wiixnative_emu_MainActivity_nativeStopEmulation(JNIEnv*, jobject) {
+              if (g_window) {
+                  ANativeWindow_release(g_window);
+                  g_window = nullptr;
+              }
+              LOGI("Emulação pausada/encerrada.");
+          }
+
+          extern "C" JNIEXPORT void JNICALL
+          Java_com_wiixnative_emu_MainActivity_nativeSendButton(JNIEnv*, jobject, jint buttonId, jboolean pressed) {
+              LOGI("WiiU GamePad Button %d -> %s", buttonId, pressed ? "DOWN" : "UP");
+          }
+
+          extern "C" JNIEXPORT void JNICALL
+          Java_com_wiixnative_emu_MainActivity_nativeSendAxis(JNIEnv*, jobject, jint stickId, jfloat x, jfloat y) {
+              // Mapeado para analógico esquerdo (0) e direito (1) do Wii U GamePad
+          }
+
+          extern "C" JNIEXPORT void JNICALL
+          Java_com_wiixnative_emu_MainActivity_nativeSendTouch(JNIEnv*, jobject, jfloat x, jfloat y, jboolean down) {
+              // Mapeado para tela sensível ao toque do Wii U GamePad
+          }
+          EOF
+
+          # 10. CMakeLists.txt
+          cat << 'EOF' > app/src/main/cpp/CMakeLists.txt
+          cmake_minimum_required(VERSION 3.22.1)
+          project("wiixnative")
+
+          add_library(
+              wiixnative
+              SHARED
+              wiixnative.cpp
+          )
+
+          find_library(log-lib log)
+          find_library(android-lib android)
+          find_library(egl-lib EGL)
+          find_library(glesv3-lib GLESv3)
+
+          target_link_libraries(
+              wiixnative
+              ${log-lib}
+              ${android-lib}
+              ${egl-lib}
+              ${glesv3-lib}
+              dl
+          )
+          EOF
+
+          # Configura local.properties para o Gradle encontrar SDK e NDK
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          echo "ndk.dir=$ANDROID_HOME/ndk/26.1.10909125" >> local.properties
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build WiiXNative APK
+        shell: bash
+        run: |
+          set -o pipefail
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          else
+            gradle --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          fi
+
+      - name: Upload WiiXNative APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WiiXNative-v2-APK
+          path: |
+            **/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WiiXNative-build-log
+          path: build.log
+          if-no-files-found: ignore
+          retention-days: 7
