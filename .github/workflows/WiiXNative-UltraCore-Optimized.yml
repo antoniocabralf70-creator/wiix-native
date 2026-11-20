@@ -1,0 +1,186 @@
+name: Build WiiXNative Ultra-Optimized Core APK (Cemu Engine)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+env:
+  JAVA_VERSION: '17'
+  ANDROID_COMPILE_SDK: '34'
+  ANDROID_BUILD_TOOLS: '34.0.0'
+  ANDROID_NDK_VERSION: '27.2.12479018'
+  CMAKE_VERSION: '3.22.1'
+
+jobs:
+  build-ultra-core:
+    name: Compile Ultra-Optimized C++ Emulator Core & APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Maximize Disk Space on Runner
+        shell: bash
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/ndk/* /opt/ghc /usr/local/.ghcup
+          df -h
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Set up Android SDK & High-Perf NDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install NDK r27c, CMake & Ninja
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build ccache pkg-config nasm zip unzip curl git build-essential
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-${{ env.ANDROID_COMPILE_SDK }}" \
+            "build-tools;${{ env.ANDROID_BUILD_TOOLS }}" \
+            "ndk;${{ env.ANDROID_NDK_VERSION }}" \
+            "cmake;${{ env.CMAKE_VERSION }}"
+
+      - name: Clone Official Cemu Core & Submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --recursive --depth 1 https://github.com/cemu-project/Cemu.git cemu-core
+
+      - name: Inject Extreme ARM64 & Compiler Optimizations (-O3, LTO, NEON, Vulkan Async)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cemu-core
+
+          # 1. Identidade WiiXNative
+          find src/android -type f \( -name "strings.xml" -o -name "*.gradle*" \) -exec sed -i 's/>Cemu</>WiiXNative</g' {} + || true
+
+          # 2. Injetar flags agressivas de compilação C++ para ARMv8.2-A + DotProd + FP16 + ThinLTO
+          if [ -f "CMakeLists.txt" ]; then
+            sed -i '1i set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -march=armv8.2-a+dotprod+fp16+crypto -mtune=cortex-a78 -ffast-math -fno-math-errno -fomit-frame-pointer -flto=thin -DNDEBUG")' CMakeLists.txt
+            sed -i '1i set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -march=armv8.2-a+dotprod+fp16+crypto -mtune=cortex-a78 -ffast-math -fno-math-errno -fomit-frame-pointer -flto=thin -DNDEBUG")' CMakeLists.txt
+            sed -i '1i set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} -flto=thin -Wl,--gc-sections -Wl,-O3")' CMakeLists.txt
+          fi
+
+          # 3. Forçar Gradle a compilar APENAS arm64-v8a em modo Release ultrarrápido
+          ANDROID_DIR=""
+          if [ -f "src/android/build.gradle.kts" ] || [ -f "src/android/build.gradle" ]; then
+            ANDROID_DIR="src/android"
+          else
+            ANDROID_DIR="$(dirname "$(find . -maxdepth 3 -name "settings.gradle*" | head -n 1)")"
+          fi
+
+          echo "ANDROID_DIR=$ANDROID_DIR" >> $GITHUB_ENV
+
+          APP_GRADLE=$(find "$ANDROID_DIR" -maxdepth 2 -name "build.gradle*" | grep "/app/" | head -n 1)
+          if [ -n "$APP_GRADLE" ]; then
+            cat << 'EOF' >> "$APP_GRADLE"
+
+// === INJEÇÃO DE OTIMIZAÇÃO EXTREMA WIIXNATIVE ===
+android {
+    defaultConfig {
+        ndk {
+            abiFilters.clear()
+            abiFilters.add("arm64-v8a")
+        }
+        externalNativeBuild {
+            cmake {
+                arguments(
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    "-DENABLE_VULKAN=ON",
+                    "-DENABLE_OPENGL=ON",
+                    "-DENABLE_DISCORD_RPC=OFF",
+                    "-DENABLE_WXWIDGETS=OFF",
+                    "-DUSE_SANITIZERS=OFF",
+                    "-DANDROID_STL=c++_shared",
+                    "-DANDROID_ARM_NEON=ON"
+                )
+                cppFlags("-O3", "-march=armv8.2-a+dotprod+fp16", "-ffast-math", "-flto=thin", "-DNDEBUG")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+}
+EOF
+          fi
+
+          # 4. Ativar GameMode / High Performance Hint no AndroidManifest se ausente
+          MANIFEST=$(find "$ANDROID_DIR" -name "AndroidManifest.xml" | head -n 1)
+          if [ -n "$MANIFEST" ] && ! grep -q "android:isGame" "$MANIFEST"; then
+            sed -i 's/<application/<application android:isGame="true" android:hardwareAccelerated="true" android:largeHeap="true"/' "$MANIFEST" || true
+          fi
+
+      - name: Set up Gradle Cache & Max Workers
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Ultra-Optimized Release APK (arm64-v8a)
+        shell: bash
+        run: |
+          set -o pipefail
+          cd "cemu-core/${ANDROID_DIR}"
+
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          echo "ndk.dir=$ANDROID_HOME/ndk/${{ env.ANDROID_NDK_VERSION }}" >> local.properties
+
+          mkdir -p ~/.gradle
+          cat << 'EOF' > ~/.gradle/gradle.properties
+org.gradle.jvmargs=-Xmx6g -XX:+UseParallelGC -Dfile.encoding=UTF-8
+org.gradle.parallel=true
+org.gradle.caching=true
+org.gradle.workers.max=4
+EOF
+
+          chmod +x ./gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee "$GITHUB_WORKSPACE/build-ultra.log"
+
+      - name: Sign & Align Final APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/output-apk"
+          RAW_APK=$(find cemu-core -path "*/build/outputs/apk/release/*.apk" | head -n 1)
+          if [ -z "$RAW_APK" ]; then
+            RAW_APK=$(find cemu-core -path "*/build/outputs/apk/debug/*.apk" | head -n 1)
+          fi
+
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/${{ env.ANDROID_BUILD_TOOLS }}"
+          "$BUILD_TOOLS/zipalign" -f -p 4 "$RAW_APK" "$GITHUB_WORKSPACE/output-apk/WiiXNative-UltraCore-aligned.apk"
+
+          keytool -genkey -v -keystore /tmp/wiix.keystore -alias wiix -keyalg RSA -keysize 2048 -validity 10000 -storepass wiixnative -keypass wiixnative -dname "CN=WiiXNative,OU=Dev,O=WiiX,L=BR,S=RJ,C=BR"
+          "$BUILD_TOOLS/apksigner" sign --ks /tmp/wiix.keystore --ks-pass pass:wiixnative --key-pass pass:wiixnative --out "$GITHUB_WORKSPACE/output-apk/WiiXNative-UltraCore-arm64.apk" "$GITHUB_WORKSPACE/output-apk/WiiXNative-UltraCore-aligned.apk"
+          rm -f "$GITHUB_WORKSPACE/output-apk/WiiXNative-UltraCore-aligned.apk"
+
+      - name: Upload Ultra-Optimized APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WiiXNative-UltraCore-APK
+          path: output-apk/WiiXNative-UltraCore-arm64.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WiiXNative-UltraCore-Log
+          path: build-ultra.log
+          if-no-files-found: ignore
+          retention-days: 7
